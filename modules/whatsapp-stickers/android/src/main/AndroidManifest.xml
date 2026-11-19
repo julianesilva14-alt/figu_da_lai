@@ -1,0 +1,17 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <!-- Android 11+: precisa declarar quais apps vamos procurar -->
+  <queries>
+    <package android:name="com.whatsapp" />
+    <package android:name="com.whatsapp.w4b" />
+  </queries>
+
+  <application>
+    <!-- O WhatsApp lê os pacotes de figurinhas por aqui -->
+    <provider
+      android:name="expo.modules.whatsappstickers.StickerContentProvider"
+      android:authorities="${applicationId}.stickercontentprovider"
+      android:enabled="true"
+      android:exported="true"
+      android:readPermission="com.whatsapp.sticker.READ" />
+  </application>
+</manifest>
