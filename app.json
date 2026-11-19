@@ -54,7 +54,8 @@
             ]
           }
         }
-      ]
+      ],
+      "./plugins/with-gradle-limits.js"
     ],
     "scheme": "figudalai",
     "extra": {
