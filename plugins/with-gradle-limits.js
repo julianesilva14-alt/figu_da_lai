@@ -1,11 +1,14 @@
-// O servidor grátis do EAS tem só 4 vCPUs. Com muitas compilações C++ em paralelo
-// (Skia, Reanimated, Worklets...) o build travou até estourar o limite de 45 min.
-// Aqui limitamos o paralelismo do Gradle para ele não se afogar.
+// O servidor grátis do EAS (4 vCPUs, 16 GB) ficou sem memória compilando o C++
+// do Skia/Reanimated em paralelo: o processo do Gradle foi morto ("daemon disappeared").
+// Aqui deixamos o build mais econômico: uma tarefa por vez, Kotlin dentro do
+// mesmo processo do Gradle (um Java a menos na memória) e heap menor.
 const { withGradleProperties } = require('expo/config-plugins');
 
 const PROPS = {
-  'org.gradle.workers.max': '2',
-  'org.gradle.jvmargs': '-Xmx4096m -XX:MaxMetaspaceSize=1024m -Dfile.encoding=UTF-8',
+  'org.gradle.workers.max': '1',
+  'org.gradle.parallel': 'false',
+  'kotlin.compiler.execution.strategy': 'in-process',
+  'org.gradle.jvmargs': '-Xmx3072m -XX:MaxMetaspaceSize=768m -Dfile.encoding=UTF-8',
 };
 
 module.exports = function withGradleLimits(config) {
