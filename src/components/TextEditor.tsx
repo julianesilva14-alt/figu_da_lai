@@ -158,6 +158,9 @@ export default function TextEditor({ image, crop, typefaces, saving, onBack, onC
     live.current = { layers, k, typefaces, selected };
   });
   const gesture = useRef<Gesture>(null);
+  // Posição do dedo (na tela) quando o gesto começou. Usamos a posição absoluta em vez do
+  // dx/dy do PanResponder, que no Android estava zerando no meio do arraste.
+  const origin = useRef({ x: 0, y: 0 });
 
   const setLayer = (index: number, fn: (l: TextLayer) => Partial<TextLayer>) =>
     setLayers((ls) => ls.map((l, i) => (i === index ? { ...l, ...fn(l) } : l)));
@@ -173,6 +176,7 @@ export default function TextEditor({ image, crop, typefaces, saving, onBack, onC
         const { layers: ls, k: s, typefaces: tf, selected: sel } = live.current;
         const px = e.nativeEvent.locationX / s;
         const py = e.nativeEvent.locationY / s;
+        origin.current = { x: e.nativeEvent.pageX, y: e.nativeEvent.pageY };
 
         // 1) Alça do texto selecionado
         if (sel !== null && ls[sel]) {
@@ -203,9 +207,12 @@ export default function TextEditor({ image, crop, typefaces, saving, onBack, onC
             ? { kind: 'move', index: sel, ox: ls[sel].x, oy: ls[sel].y, tapToDeselect: true }
             : null;
       },
-      onPanResponderMove: (e, g) => {
+      onPanResponderMove: (e) => {
         const { layers: ls, k: s, typefaces: tf, selected: sel } = live.current;
         const touches = e.nativeEvent.touches;
+        const finger = touches[0] ?? e.nativeEvent;
+        const dx = finger.pageX - origin.current.x;
+        const dy = finger.pageY - origin.current.y;
         const cur = gesture.current;
         const index = cur?.index ?? sel;
         if (index === null || index === undefined || !ls[index]) return;
@@ -223,24 +230,19 @@ export default function TextEditor({ image, crop, typefaces, saving, onBack, onC
 
         if (!cur) return;
         if (cur.kind === 'pinch') {
-          // Voltou para um dedo: continua movendo sem dar pulo.
-          gesture.current = {
-            kind: 'move',
-            index,
-            ox: ls[index].x - g.dx / s,
-            oy: ls[index].y - g.dy / s,
-            tapToDeselect: false,
-          };
+          // Voltou para um dedo: continua movendo a partir daqui, sem dar pulo.
+          origin.current = { x: finger.pageX, y: finger.pageY };
+          gesture.current = { kind: 'move', index, ox: ls[index].x, oy: ls[index].y, tapToDeselect: false };
           return;
         }
         if (cur.kind === 'handle') {
           const l = ls[index];
-          const d = Math.hypot(cur.px + g.dx / s - l.x, cur.py + g.dy / s - l.y);
+          const d = Math.hypot(cur.px + dx / s - l.x, cur.py + dy / s - l.y);
           setLayer(index, () => ({ size: clamp((cur.startSize * d) / cur.startDist, MIN_SIZE, MAX_SIZE) }));
           return;
         }
-        if (Math.abs(g.dx) > 6 || Math.abs(g.dy) > 6) cur.tapToDeselect = false;
-        setLayer(index, (l) => clampCenter(l, cur.ox + g.dx / s, cur.oy + g.dy / s, tf));
+        if (Math.abs(dx) > 6 || Math.abs(dy) > 6) cur.tapToDeselect = false;
+        setLayer(index, (l) => clampCenter(l, cur.ox + dx / s, cur.oy + dy / s, tf));
       },
       onPanResponderRelease: () => {
         const cur = gesture.current;
