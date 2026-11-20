@@ -56,7 +56,7 @@ function getPacks(): Pack[] {
 function writeDisk(packs: Pack[]) {
   const f = indexFile();
   if (!f.exists) f.create();
-  f.write(JSON.stringify({ packs }));
+  f.writeSync(JSON.stringify({ packs }));
 }
 
 function commit(next: Pack[]) {
@@ -119,14 +119,14 @@ function refreshTray(packId: string, stickers: Sticker[]) {
   }
   const base64 = renderTray(new File(packDir(packId), stickers[0].file));
   if (!tray.exists) tray.create();
-  tray.write(base64, { encoding: 'base64' });
+  tray.writeSync(base64, { encoding: 'base64' });
 }
 
 export function addSticker(packId: string, webpBase64: string, emoji: string) {
   const name = `${Date.now()}.webp`;
   const file = new File(packDir(packId), name);
   file.create();
-  file.write(webpBase64, { encoding: 'base64' });
+  file.writeSync(webpBase64, { encoding: 'base64' });
   updatePack(packId, (p) => {
     const stickers = [...p.stickers, { file: name, emojis: [emoji] }];
     if (stickers.length === 1) refreshTray(packId, stickers);
@@ -157,7 +157,7 @@ function migrateLooseStickers(): Pack[] {
   const stickers: Sticker[] = files.map((f) => {
     const dest = new File(packDir(id), f.name);
     dest.create();
-    dest.write(f.base64Sync(), { encoding: 'base64' });
+    dest.writeSync(f.base64Sync(), { encoding: 'base64' });
     return { file: f.name, emojis: ['😀'] };
   });
   old.delete();
