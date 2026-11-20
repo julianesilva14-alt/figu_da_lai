@@ -1,4 +1,13 @@
-import { Canvas, createPicture, Group, PaintStyle, Picture, Skia, SkImage } from '@shopify/react-native-skia';
+import {
+  Canvas,
+  createPicture,
+  Group,
+  PaintStyle,
+  Picture,
+  Skia,
+  SkImage,
+  StrokeCap,
+} from '@shopify/react-native-skia';
 import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { PanResponder, Pressable, ScrollView, StyleSheet, TextInput, useWindowDimensions, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -18,10 +27,35 @@ type Props = {
 
 const SWATCHES = ['#FFFFFF', '#000000', '#FF4F81', '#FFC83D', '#25D366', '#3DA5FF', '#7B5CFF', '#FF7A2F'];
 const EMOJIS = ['😂', '😍', '🥹', '😭', '😡', '😎', '🙄', '🤔', '👍', '❤️', '🔥', '💅', '🎉', '😴'];
-const MIN_SIZE = 28;
-const MAX_SIZE = 200;
+const MIN_SIZE = 20;
+const MAX_SIZE = 320;
 const TOUCH_PAD = 24; // folga ao tocar num texto, em pixels da figurinha
+const HANDLE_R = 26; // raio da alça de redimensionar, em pixels da figurinha
+const HANDLE_TOUCH = 56;
+const VISIBLE_MIN = 40; // quanto do texto precisa continuar dentro do quadro
 const clamp = (v: number, min: number, max: number) => Math.min(Math.max(v, min), max);
+
+/** Moldura de seleção (um pouco maior que o texto) e a posição da alça no canto. */
+function frameOf(layer: TextLayer, typefaces: Typefaces) {
+  const b = textBounds(layer, typefaces);
+  const f = { x: b.x - 12, y: b.y - 8, w: b.w + 24, h: b.h + 16 };
+  return { ...f, hx: f.x + f.w, hy: f.y + f.h };
+}
+
+/** Deixa o texto ir até fora da borda, mas sempre com um pedaço visível. */
+function clampCenter(layer: TextLayer, x: number, y: number, typefaces: Typefaces) {
+  const b = textBounds(layer, typefaces);
+  return {
+    x: clamp(x, VISIBLE_MIN - b.w / 2, STICKER_SIZE - VISIBLE_MIN + b.w / 2),
+    y: clamp(y, VISIBLE_MIN - b.h / 2, STICKER_SIZE - VISIBLE_MIN + b.h / 2),
+  };
+}
+
+type Gesture =
+  | { kind: 'move'; index: number; ox: number; oy: number; tapToDeselect: boolean }
+  | { kind: 'handle'; index: number; startSize: number; startDist: number; px: number; py: number }
+  | { kind: 'pinch'; index: number; startSize: number; startDist: number }
+  | null;
 
 const DEFAULT_LAYER: TextLayer = {
   text: '',
@@ -80,25 +114,54 @@ export default function TextEditor({ image, crop, typefaces, saving, onBack, onC
         layers.forEach((l) => drawTextLayer(c, l, typefaces));
 
         if (selected !== null && layers[selected]) {
-          const b = textBounds(layers[selected], typefaces);
+          const f = frameOf(layers[selected], typefaces);
           const frame = Skia.Paint();
           frame.setAntiAlias(true);
           frame.setStyle(PaintStyle.Stroke);
           frame.setStrokeWidth(4);
           frame.setColor(Skia.Color(colors.primary));
           frame.setPathEffect(Skia.PathEffect.MakeDash([16, 10], 0));
-          c.drawRRect(Skia.RRectXY(Skia.XYWHRect(b.x - 12, b.y - 8, b.w + 24, b.h + 16), 14, 14), frame);
+          c.drawRRect(Skia.RRectXY(Skia.XYWHRect(f.x, f.y, f.w, f.h), 14, 14), frame);
+
+          // Alça de redimensionar (bolinha com setinha ↘)
+          const fill = Skia.Paint();
+          fill.setAntiAlias(true);
+          fill.setColor(Skia.Color(colors.primary));
+          c.drawCircle(f.hx, f.hy, HANDLE_R, fill);
+          const ring = Skia.Paint();
+          ring.setAntiAlias(true);
+          ring.setStyle(PaintStyle.Stroke);
+          ring.setStrokeWidth(5);
+          ring.setColor(Skia.Color('#FFFFFF'));
+          c.drawCircle(f.hx, f.hy, HANDLE_R, ring);
+          const a = HANDLE_R * 0.45;
+          ring.setStrokeWidth(4);
+          ring.setStrokeCap(StrokeCap.Round);
+          c.drawLine(f.hx - a, f.hy - a, f.hx + a, f.hy + a, ring);
+          c.drawLine(f.hx + a, f.hy, f.hx + a, f.hy + a, ring);
+          c.drawLine(f.hx, f.hy + a, f.hx + a, f.hy + a, ring);
         }
       }, Skia.XYWHRect(0, 0, STICKER_SIZE, STICKER_SIZE)),
     [image, crop, layers, selected, typefaces],
   );
 
-  // Tocar seleciona o texto embaixo do dedo; arrastar move esse texto.
-  const live = useRef({ layers, k, typefaces });
+  /*
+   * Gestos na prévia:
+   * - tocar num texto seleciona e arrasta ele;
+   * - com um texto selecionado, arrastar em QUALQUER lugar da prévia move esse texto;
+   * - arrastar a bolinha do canto aumenta/diminui;
+   * - pinça com dois dedos aumenta/diminui;
+   * - um toque rápido fora dos textos tira a seleção.
+   */
+  const live = useRef({ layers, k, typefaces, selected });
   useLayoutEffect(() => {
-    live.current = { layers, k, typefaces };
+    live.current = { layers, k, typefaces, selected };
   });
-  const drag = useRef<{ index: number; x: number; y: number } | null>(null);
+  const gesture = useRef<Gesture>(null);
+
+  const setLayer = (index: number, fn: (l: TextLayer) => Partial<TextLayer>) =>
+    setLayers((ls) => ls.map((l, i) => (i === index ? { ...l, ...fn(l) } : l)));
+
   // As refs só são lidas dentro dos handlers de toque (fora do render).
   // eslint-disable-next-line react-hooks/refs
   const [responder] = useState(() =>
@@ -107,10 +170,20 @@ export default function TextEditor({ image, crop, typefaces, saving, onBack, onC
       onMoveShouldSetPanResponder: () => true,
       onPanResponderTerminationRequest: () => false,
       onPanResponderGrant: (e) => {
-        const { layers: ls, k: s, typefaces: tf } = live.current;
+        const { layers: ls, k: s, typefaces: tf, selected: sel } = live.current;
         const px = e.nativeEvent.locationX / s;
         const py = e.nativeEvent.locationY / s;
-        // De cima para baixo: o último texto desenhado é o que está por cima.
+
+        // 1) Alça do texto selecionado
+        if (sel !== null && ls[sel]) {
+          const f = frameOf(ls[sel], tf);
+          if (Math.hypot(px - f.hx, py - f.hy) < HANDLE_TOUCH) {
+            const startDist = Math.max(20, Math.hypot(px - ls[sel].x, py - ls[sel].y));
+            gesture.current = { kind: 'handle', index: sel, startSize: ls[sel].size, startDist, px, py };
+            return;
+          }
+        }
+        // 2) Algum texto embaixo do dedo (o de cima primeiro)
         for (let i = ls.length - 1; i >= 0; i--) {
           const b = textBounds(ls[i], tf);
           if (
@@ -119,32 +192,63 @@ export default function TextEditor({ image, crop, typefaces, saving, onBack, onC
             py >= b.y - TOUCH_PAD &&
             py <= b.y + b.h + TOUCH_PAD
           ) {
-            drag.current = { index: i, x: ls[i].x, y: ls[i].y };
+            gesture.current = { kind: 'move', index: i, ox: ls[i].x, oy: ls[i].y, tapToDeselect: false };
             setSelected(i);
             return;
           }
         }
-        drag.current = null;
-        setSelected(null);
+        // 3) Fora dos textos: move o selecionado (se houver)
+        gesture.current =
+          sel !== null && ls[sel]
+            ? { kind: 'move', index: sel, ox: ls[sel].x, oy: ls[sel].y, tapToDeselect: true }
+            : null;
       },
-      onPanResponderMove: (_, g) => {
-        const d = drag.current;
-        if (!d) return;
-        const s = live.current.k;
-        setLayers((ls) =>
-          ls.map((l, i) =>
-            i === d.index
-              ? {
-                  ...l,
-                  x: clamp(d.x + g.dx / s, 0, STICKER_SIZE),
-                  y: clamp(d.y + g.dy / s, 0, STICKER_SIZE),
-                }
-              : l,
-          ),
-        );
+      onPanResponderMove: (e, g) => {
+        const { layers: ls, k: s, typefaces: tf, selected: sel } = live.current;
+        const touches = e.nativeEvent.touches;
+        const cur = gesture.current;
+        const index = cur?.index ?? sel;
+        if (index === null || index === undefined || !ls[index]) return;
+
+        // Dois dedos: pinça para redimensionar
+        if (touches.length >= 2) {
+          const dist = Math.hypot(touches[0].pageX - touches[1].pageX, touches[0].pageY - touches[1].pageY);
+          if (cur?.kind !== 'pinch') {
+            gesture.current = { kind: 'pinch', index, startSize: ls[index].size, startDist: Math.max(dist, 1) };
+          } else {
+            setLayer(index, () => ({ size: clamp((cur.startSize * dist) / cur.startDist, MIN_SIZE, MAX_SIZE) }));
+          }
+          return;
+        }
+
+        if (!cur) return;
+        if (cur.kind === 'pinch') {
+          // Voltou para um dedo: continua movendo sem dar pulo.
+          gesture.current = {
+            kind: 'move',
+            index,
+            ox: ls[index].x - g.dx / s,
+            oy: ls[index].y - g.dy / s,
+            tapToDeselect: false,
+          };
+          return;
+        }
+        if (cur.kind === 'handle') {
+          const l = ls[index];
+          const d = Math.hypot(cur.px + g.dx / s - l.x, cur.py + g.dy / s - l.y);
+          setLayer(index, () => ({ size: clamp((cur.startSize * d) / cur.startDist, MIN_SIZE, MAX_SIZE) }));
+          return;
+        }
+        if (Math.abs(g.dx) > 6 || Math.abs(g.dy) > 6) cur.tapToDeselect = false;
+        setLayer(index, (l) => clampCenter(l, cur.ox + g.dx / s, cur.oy + g.dy / s, tf));
       },
       onPanResponderRelease: () => {
-        drag.current = null;
+        const cur = gesture.current;
+        if (cur?.kind === 'move' && cur.tapToDeselect) setSelected(null);
+        gesture.current = null;
+      },
+      onPanResponderTerminate: () => {
+        gesture.current = null;
       },
     }),
   );
@@ -169,7 +273,7 @@ export default function TextEditor({ image, crop, typefaces, saving, onBack, onC
           </Group>
         </Canvas>
       </View>
-      <Txt style={styles.dragHint}>Toque num texto para editar · arraste para mover</Txt>
+      <Txt style={styles.dragHint}>Arraste para mover · pinça ou bolinha para mudar o tamanho</Txt>
 
       <View style={styles.layerBar}>
         <Button title="Novo texto" icon="＋" variant="soft" onPress={addLayer} style={styles.smallBtn} />
