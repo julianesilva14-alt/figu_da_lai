@@ -1,5 +1,6 @@
-import { FilterMode, ImageFormat, MipmapMode, Skia, SkImage } from '@shopify/react-native-skia';
+import { FilterMode, ImageFormat, MipmapMode, Skia, SkCanvas, SkImage } from '@shopify/react-native-skia';
 import { File } from 'expo-file-system';
+import { drawTextLayer, TextLayer, Typefaces } from './text';
 
 /** Regras do WhatsApp. */
 export const STICKER_SIZE = 512; // figurinha: 512x512 WebP, até 100 KB
@@ -20,12 +21,8 @@ function loadImageFromFile(file: File): SkImage {
   return img;
 }
 
-/** Desenha `crop` da imagem encostando nas bordas de um quadro `size`x`size` transparente. */
-function drawFilled(image: SkImage, crop: Crop, size: number) {
-  const surface = Skia.Surface.Make(size, size);
-  if (!surface) throw new Error('Falha ao criar a imagem');
-  const canvas = surface.getCanvas();
-  canvas.clear(Skia.Color('transparent'));
+/** Desenha `crop` da imagem encostando nas bordas de um quadro `size`x`size`. */
+export function drawCropFilled(canvas: SkCanvas, image: SkImage, crop: Crop, size: number) {
   const scale = size / Math.max(crop.w, crop.h);
   const dw = crop.w * scale;
   const dh = crop.h * scale;
@@ -36,18 +33,33 @@ function drawFilled(image: SkImage, crop: Crop, size: number) {
     FilterMode.Linear,
     MipmapMode.Linear,
   );
+}
+
+function drawFilled(image: SkImage, crop: Crop, size: number, extra?: (c: SkCanvas) => void) {
+  const surface = Skia.Surface.Make(size, size);
+  if (!surface) throw new Error('Falha ao criar a imagem');
+  const canvas = surface.getCanvas();
+  canvas.clear(Skia.Color('transparent'));
+  drawCropFilled(canvas, image, crop, size);
+  extra?.(canvas);
   surface.flush();
   return surface.makeImageSnapshot();
 }
 
 /**
  * Gera a figurinha SEM margem e SEM contorno branco: o recorte é ampliado até
- * encostar na borda do quadro. Quadrado → ocupa 100%. Retângulo → o lado maior
+ * encostar na borda do quadro. O texto (se houver) é desenhado por cima. Quadrado → ocupa 100%. Retângulo → o lado maior
  * encosta na borda e o que sobra fica transparente.
  * Retorna o WebP em base64, já abaixo do limite de 100 KB.
  */
-export function renderSticker(image: SkImage, crop: Crop): string {
-  const snapshot = drawFilled(image, crop, STICKER_SIZE);
+export function renderSticker(
+  image: SkImage,
+  crop: Crop,
+  text?: { layer: TextLayer; typefaces: Typefaces } | null,
+): string {
+  const snapshot = drawFilled(image, crop, STICKER_SIZE, (c) => {
+    if (text) drawTextLayer(c, text.layer, text.typefaces);
+  });
   let base64 = '';
   for (const quality of [95, 90, 85, 80, 70, 60, 50, 40, 30]) {
     base64 = snapshot.encodeToBase64(ImageFormat.WEBP, quality);

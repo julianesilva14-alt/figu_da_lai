@@ -1,6 +1,6 @@
 import { Canvas, Image as SkiaImage, SkImage } from '@shopify/react-native-skia';
 import { useLayoutEffect, useRef, useState } from 'react';
-import { LayoutChangeEvent, PanResponder, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { LayoutChangeEvent, PanResponder, Pressable, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Crop } from '../lib/render';
 import { colors } from '../theme';
@@ -8,16 +8,16 @@ import { Button, Txt } from './ui';
 
 type Props = {
   image: SkImage;
-  saving?: boolean;
+  /** Recorte anterior (ao voltar da tela de texto). */
+  initialCrop?: Crop;
   onCancel: () => void;
-  onConfirm: (crop: Crop, emoji: string) => void;
+  onConfirm: (crop: Crop) => void;
 };
 
 type Mode = 'move' | 'tl' | 'tr' | 'bl' | 'br' | null;
 
 const HANDLE_TOUCH = 44; // área de toque dos cantos, em pixels da tela
 const MIN_SIZE = 32; // tamanho mínimo do recorte, em pixels da imagem
-const EMOJIS = ['😂', '😍', '🥹', '😭', '😡', '😎', '🙄', '🤔', '👍', '❤️', '🔥', '💅', '🎉', '😴'];
 
 function centeredSquare(iw: number, ih: number): Crop {
   const s = Math.min(iw, ih);
@@ -26,14 +26,13 @@ function centeredSquare(iw: number, ih: number): Crop {
 
 const clamp = (v: number, min: number, max: number) => Math.min(Math.max(v, min), max);
 
-export default function CropEditor({ image, saving, onCancel, onConfirm }: Props) {
+export default function CropEditor({ image, initialCrop, onCancel, onConfirm }: Props) {
   const insets = useSafeAreaInsets();
   const iw = image.width();
   const ih = image.height();
   const [box, setBox] = useState({ w: 0, h: 0 });
-  const [crop, setCrop] = useState<Crop>(() => centeredSquare(iw, ih));
-  const [square, setSquare] = useState(true);
-  const [emoji, setEmoji] = useState(EMOJIS[0]);
+  const [crop, setCrop] = useState<Crop>(() => initialCrop ?? centeredSquare(iw, ih));
+  const [square, setSquare] = useState(() => !initialCrop || Math.abs(initialCrop.w - initialCrop.h) < 1);
 
   // Como a imagem aparece na tela (encaixada no espaço disponível).
   const scale = box.w ? Math.min(box.w / iw, box.h / ih) : 1;
@@ -192,27 +191,9 @@ export default function CropEditor({ image, saving, onCancel, onConfirm }: Props
           : 'Livre: o lado maior encosta na borda, o resto fica transparente'}
       </Txt>
 
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        contentContainerStyle={styles.emojiRow}
-        style={{ flexGrow: 0 }}
-      >
-        {EMOJIS.map((e) => (
-          <Pressable key={e} onPress={() => setEmoji(e)} style={[styles.emojiBtn, emoji === e && styles.emojiOn]}>
-            <Txt style={{ fontSize: 24 }}>{e}</Txt>
-          </Pressable>
-        ))}
-      </ScrollView>
-
       <View style={styles.bar}>
         <Button title="Cancelar" variant="ghost" onPress={onCancel} style={{ flex: 1 }} />
-        <Button
-          title="Salvar figurinha"
-          onPress={() => onConfirm(crop, emoji)}
-          loading={saving}
-          style={{ flex: 1.6 }}
-        />
+        <Button title="Próximo: texto ›" onPress={() => onConfirm(crop)} style={{ flex: 1.6 }} />
       </View>
     </View>
   );
@@ -247,16 +228,6 @@ const styles = StyleSheet.create({
     borderWidth: 3,
     borderColor: '#fff',
   },
-  hint: { color: 'rgba(255,255,255,0.65)', textAlign: 'center', paddingHorizontal: 24, fontSize: 14 },
-  emojiRow: { gap: 8, paddingHorizontal: 18, paddingVertical: 12 },
-  emojiBtn: {
-    width: 46,
-    height: 46,
-    borderRadius: 23,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(255,255,255,0.07)',
-  },
-  emojiOn: { backgroundColor: colors.primary, transform: [{ scale: 1.08 }] },
+  hint: { color: 'rgba(255,255,255,0.65)', textAlign: 'center', paddingHorizontal: 24, paddingBottom: 14, fontSize: 14 },
   bar: { flexDirection: 'row', gap: 10, paddingHorizontal: 18 },
 });

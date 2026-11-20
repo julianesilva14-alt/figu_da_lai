@@ -2,12 +2,12 @@ import {
   Fredoka_400Regular,
   Fredoka_500Medium,
   Fredoka_600SemiBold,
-  Fredoka_700Bold,
   useFonts,
 } from '@expo-google-fonts/fredoka';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { View } from 'react-native';
+import { RN_FONTS } from '../lib/text';
 import { colors } from '../theme';
 
 export default function RootLayout() {
@@ -15,7 +15,7 @@ export default function RootLayout() {
     Fredoka_400Regular,
     Fredoka_500Medium,
     Fredoka_600SemiBold,
-    Fredoka_700Bold,
+    ...RN_FONTS, // inclui a Fredoka_700Bold e as fontes do texto das figurinhas
   });
 
   if (!loaded) return <View style={{ flex: 1, backgroundColor: colors.bg }} />;
