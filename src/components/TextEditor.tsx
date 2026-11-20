@@ -1,9 +1,9 @@
-import { Canvas, createPicture, Group, Picture, Skia, SkImage } from '@shopify/react-native-skia';
+import { Canvas, createPicture, Group, PaintStyle, Picture, Skia, SkImage } from '@shopify/react-native-skia';
 import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { PanResponder, Pressable, ScrollView, StyleSheet, TextInput, useWindowDimensions, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Crop, drawCropFilled, STICKER_SIZE } from '../lib/render';
-import { drawTextLayer, FONTS, TextLayer, Typefaces } from '../lib/text';
+import { drawTextLayer, FONTS, TextLayer, textBounds, Typefaces } from '../lib/text';
 import { colors, fonts } from '../theme';
 import { Button, Txt } from './ui';
 
@@ -13,36 +13,58 @@ type Props = {
   typefaces: Typefaces;
   saving?: boolean;
   onBack: () => void;
-  onConfirm: (layer: TextLayer | null, emoji: string) => void;
+  onConfirm: (layers: TextLayer[], emoji: string) => void;
 };
 
 const SWATCHES = ['#FFFFFF', '#000000', '#FF4F81', '#FFC83D', '#25D366', '#3DA5FF', '#7B5CFF', '#FF7A2F'];
 const EMOJIS = ['😂', '😍', '🥹', '😭', '😡', '😎', '🙄', '🤔', '👍', '❤️', '🔥', '💅', '🎉', '😴'];
 const MIN_SIZE = 28;
 const MAX_SIZE = 200;
+const TOUCH_PAD = 24; // folga ao tocar num texto, em pixels da figurinha
 const clamp = (v: number, min: number, max: number) => Math.min(Math.max(v, min), max);
+
+const DEFAULT_LAYER: TextLayer = {
+  text: '',
+  font: 'anton',
+  color: '#FFFFFF',
+  outline: '#000000',
+  size: 72,
+  x: STICKER_SIZE / 2,
+  y: STICKER_SIZE * 0.84,
+};
 
 export default function TextEditor({ image, crop, typefaces, saving, onBack, onConfirm }: Props) {
   const insets = useSafeAreaInsets();
-  const { width } = useWindowDimensions();
-  const preview = Math.min(width - 36, 320);
+  const { width, height } = useWindowDimensions();
+  const preview = Math.min(width - 36, height * 0.4, 340);
   const k = preview / STICKER_SIZE;
 
-  const [layer, setLayer] = useState<TextLayer>({
-    text: '',
-    font: 'anton',
-    color: '#FFFFFF',
-    outline: '#000000',
-    size: 72,
-    x: STICKER_SIZE / 2,
-    y: STICKER_SIZE * 0.84,
-  });
+  const [layers, setLayers] = useState<TextLayer[]>([DEFAULT_LAYER]);
+  const [selected, setSelected] = useState<number | null>(0);
   const [target, setTarget] = useState<'fill' | 'outline'>('fill');
   const [emoji, setEmoji] = useState(EMOJIS[0]);
-  const [dragging, setDragging] = useState(false);
-  const update = (patch: Partial<TextLayer>) => setLayer((l) => ({ ...l, ...patch }));
+  const inputRef = useRef<React.ComponentRef<typeof TextInput>>(null);
 
-  // A prévia usa exatamente o mesmo desenho da figurinha final.
+  const current = selected !== null ? layers[selected] : null;
+  const update = (patch: Partial<TextLayer>) =>
+    setLayers((ls) => ls.map((l, i) => (i === selected ? { ...l, ...patch } : l)));
+
+  const addLayer = () => {
+    // O novo texto herda o estilo do atual e aparece no meio.
+    const base = current ?? DEFAULT_LAYER;
+    const next = { ...base, text: '', x: STICKER_SIZE / 2, y: STICKER_SIZE / 2 };
+    setLayers((ls) => [...ls, next]);
+    setSelected(layers.length);
+    setTimeout(() => inputRef.current?.focus(), 50);
+  };
+
+  const removeLayer = () => {
+    if (selected === null) return;
+    setLayers((ls) => ls.filter((_, i) => i !== selected));
+    setSelected(null);
+  };
+
+  // A prévia usa exatamente o mesmo desenho da figurinha final + a moldura de seleção.
   const picture = useMemo(
     () =>
       createPicture((c) => {
@@ -55,17 +77,28 @@ export default function TextEditor({ image, crop, typefaces, saving, onBack, onC
             c.drawRect(Skia.XYWHRect(x, y, sq, sq), p);
           }
         drawCropFilled(c, image, crop, STICKER_SIZE);
-        drawTextLayer(c, layer, typefaces);
+        layers.forEach((l) => drawTextLayer(c, l, typefaces));
+
+        if (selected !== null && layers[selected]) {
+          const b = textBounds(layers[selected], typefaces);
+          const frame = Skia.Paint();
+          frame.setAntiAlias(true);
+          frame.setStyle(PaintStyle.Stroke);
+          frame.setStrokeWidth(4);
+          frame.setColor(Skia.Color(colors.primary));
+          frame.setPathEffect(Skia.PathEffect.MakeDash([16, 10], 0));
+          c.drawRRect(Skia.RRectXY(Skia.XYWHRect(b.x - 12, b.y - 8, b.w + 24, b.h + 16), 14, 14), frame);
+        }
       }, Skia.XYWHRect(0, 0, STICKER_SIZE, STICKER_SIZE)),
-    [image, crop, layer, typefaces],
+    [image, crop, layers, selected, typefaces],
   );
 
-  // Arrastar o texto pela prévia
-  const live = useRef({ layer, k });
+  // Tocar seleciona o texto embaixo do dedo; arrastar move esse texto.
+  const live = useRef({ layers, k, typefaces });
   useLayoutEffect(() => {
-    live.current = { layer, k };
+    live.current = { layers, k, typefaces };
   });
-  const start = useRef({ x: 0, y: 0 });
+  const drag = useRef<{ index: number; x: number; y: number } | null>(null);
   // As refs só são lidas dentro dos handlers de toque (fora do render).
   // eslint-disable-next-line react-hooks/refs
   const [responder] = useState(() =>
@@ -73,25 +106,51 @@ export default function TextEditor({ image, crop, typefaces, saving, onBack, onC
       onStartShouldSetPanResponder: () => true,
       onMoveShouldSetPanResponder: () => true,
       onPanResponderTerminationRequest: () => false,
-      onPanResponderGrant: () => {
-        start.current = { x: live.current.layer.x, y: live.current.layer.y };
-        setDragging(true);
+      onPanResponderGrant: (e) => {
+        const { layers: ls, k: s, typefaces: tf } = live.current;
+        const px = e.nativeEvent.locationX / s;
+        const py = e.nativeEvent.locationY / s;
+        // De cima para baixo: o último texto desenhado é o que está por cima.
+        for (let i = ls.length - 1; i >= 0; i--) {
+          const b = textBounds(ls[i], tf);
+          if (
+            px >= b.x - TOUCH_PAD &&
+            px <= b.x + b.w + TOUCH_PAD &&
+            py >= b.y - TOUCH_PAD &&
+            py <= b.y + b.h + TOUCH_PAD
+          ) {
+            drag.current = { index: i, x: ls[i].x, y: ls[i].y };
+            setSelected(i);
+            return;
+          }
+        }
+        drag.current = null;
+        setSelected(null);
       },
       onPanResponderMove: (_, g) => {
+        const d = drag.current;
+        if (!d) return;
         const s = live.current.k;
-        setLayer((l) => ({
-          ...l,
-          x: clamp(start.current.x + g.dx / s, 0, STICKER_SIZE),
-          y: clamp(start.current.y + g.dy / s, 0, STICKER_SIZE),
-        }));
+        setLayers((ls) =>
+          ls.map((l, i) =>
+            i === d.index
+              ? {
+                  ...l,
+                  x: clamp(d.x + g.dx / s, 0, STICKER_SIZE),
+                  y: clamp(d.y + g.dy / s, 0, STICKER_SIZE),
+                }
+              : l,
+          ),
+        );
       },
-      onPanResponderRelease: () => setDragging(false),
-      onPanResponderTerminate: () => setDragging(false),
+      onPanResponderRelease: () => {
+        drag.current = null;
+      },
     }),
   );
 
-  const hasText = layer.text.trim().length > 0;
-  const activeColor = target === 'fill' ? layer.color : layer.outline;
+  const activeColor = current ? (target === 'fill' ? current.color : current.outline) : null;
+  const filled = layers.filter((l) => l.text.trim());
 
   return (
     <View style={[styles.container, { paddingTop: insets.top + 8, paddingBottom: insets.bottom + 12 }]}>
@@ -102,90 +161,105 @@ export default function TextEditor({ image, crop, typefaces, saving, onBack, onC
         <Txt style={styles.headerHint}>opcional</Txt>
       </View>
 
-      <ScrollView
-        scrollEnabled={!dragging}
-        keyboardShouldPersistTaps="handled"
-        contentContainerStyle={styles.scroll}
-      >
-        <View style={[styles.previewWrap, { width: preview, height: preview }]} {...responder.panHandlers}>
-          <Canvas style={{ width: preview, height: preview }}>
-            <Group transform={[{ scale: k }]}>
-              <Picture picture={picture} />
-            </Group>
-          </Canvas>
-        </View>
-        <Txt style={styles.dragHint}>{hasText ? 'Arraste na imagem para mover o texto' : ' '}</Txt>
+      {/* Prévia fixa (fora da rolagem, para o arrastar não brigar com o scroll) */}
+      <View style={[styles.previewWrap, { width: preview, height: preview }]} {...responder.panHandlers}>
+        <Canvas style={{ width: preview, height: preview }} pointerEvents="none">
+          <Group transform={[{ scale: k }]}>
+            <Picture picture={picture} />
+          </Group>
+        </Canvas>
+      </View>
+      <Txt style={styles.dragHint}>Toque num texto para editar · arraste para mover</Txt>
 
-        <TextInput
-          value={layer.text}
-          onChangeText={(text) => update({ text })}
-          placeholder="Escreva algo… (ou deixe em branco)"
-          placeholderTextColor="rgba(255,255,255,0.4)"
-          multiline
-          maxLength={60}
-          style={styles.input}
-        />
+      <View style={styles.layerBar}>
+        <Button title="Novo texto" icon="＋" variant="soft" onPress={addLayer} style={styles.smallBtn} />
+        {current && (
+          <Button title="Apagar texto" variant="danger" onPress={removeLayer} style={styles.smallBtn} />
+        )}
+      </View>
 
-        <Section title="Fonte">
-          {FONTS.map((f) => (
-            <Pressable
-              key={f.key}
-              onPress={() => update({ font: f.key })}
-              style={[styles.fontBtn, layer.font === f.key && styles.on]}
-            >
-              <Txt style={{ fontFamily: f.rn, color: '#fff', fontSize: 18 }}>{f.label}</Txt>
-            </Pressable>
-          ))}
-        </Section>
-
-        <View style={styles.segment}>
-          {(['fill', 'outline'] as const).map((t) => (
-            <Pressable key={t} onPress={() => setTarget(t)} style={[styles.segBtn, target === t && styles.on]}>
-              <Txt weight="medium" style={styles.segTxt}>
-                {t === 'fill' ? 'Cor da letra' : 'Contorno'}
-              </Txt>
-            </Pressable>
-          ))}
-        </View>
-        <Section>
-          {target === 'outline' && (
-            <Pressable
-              onPress={() => update({ outline: null })}
-              style={[styles.swatch, styles.noneSwatch, layer.outline === null && styles.swatchOn]}
-            >
-              <Txt style={{ color: '#fff', fontSize: 16 }}>⌀</Txt>
-            </Pressable>
-          )}
-          {SWATCHES.map((c) => (
-            <Pressable
-              key={c}
-              onPress={() => update(target === 'fill' ? { color: c } : { outline: c })}
-              style={[styles.swatch, { backgroundColor: c }, activeColor === c && styles.swatchOn]}
+      <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.scroll}>
+        {current ? (
+          <>
+            <TextInput
+              ref={inputRef}
+              value={current.text}
+              onChangeText={(text) => update({ text })}
+              placeholder="Escreva algo…"
+              placeholderTextColor="rgba(255,255,255,0.4)"
+              multiline
+              maxLength={60}
+              style={styles.input}
             />
-          ))}
-        </Section>
 
-        <View style={styles.sizeRow}>
-          <Txt weight="medium" style={styles.label}>
-            Tamanho
+            <Section title="Fonte">
+              {FONTS.map((f) => (
+                <Pressable
+                  key={f.key}
+                  onPress={() => update({ font: f.key })}
+                  style={[styles.fontBtn, current.font === f.key && styles.on]}
+                >
+                  <Txt style={{ fontFamily: f.rn, color: '#fff', fontSize: 18 }}>{f.label}</Txt>
+                </Pressable>
+              ))}
+            </Section>
+
+            <View style={styles.segment}>
+              {(['fill', 'outline'] as const).map((t) => (
+                <Pressable key={t} onPress={() => setTarget(t)} style={[styles.segBtn, target === t && styles.on]}>
+                  <Txt weight="medium" style={styles.segTxt}>
+                    {t === 'fill' ? 'Cor da letra' : 'Contorno'}
+                  </Txt>
+                </Pressable>
+              ))}
+            </View>
+            <Section>
+              {target === 'outline' && (
+                <Pressable
+                  onPress={() => update({ outline: null })}
+                  style={[styles.swatch, styles.noneSwatch, current.outline === null && styles.swatchOn]}
+                >
+                  <Txt style={{ color: '#fff', fontSize: 16 }}>⌀</Txt>
+                </Pressable>
+              )}
+              {SWATCHES.map((c) => (
+                <Pressable
+                  key={c}
+                  onPress={() => update(target === 'fill' ? { color: c } : { outline: c })}
+                  style={[styles.swatch, { backgroundColor: c }, activeColor === c && styles.swatchOn]}
+                />
+              ))}
+            </Section>
+
+            <View style={styles.sizeRow}>
+              <Txt weight="medium" style={styles.label}>
+                Tamanho
+              </Txt>
+              <Pressable
+                onPress={() => update({ size: clamp(current.size - 10, MIN_SIZE, MAX_SIZE) })}
+                style={styles.sizeBtn}
+              >
+                <Txt weight="bold" style={styles.sizeTxt}>
+                  A−
+                </Txt>
+              </Pressable>
+              <Pressable
+                onPress={() => update({ size: clamp(current.size + 10, MIN_SIZE, MAX_SIZE) })}
+                style={styles.sizeBtn}
+              >
+                <Txt weight="bold" style={[styles.sizeTxt, { fontSize: 22 }]}>
+                  A+
+                </Txt>
+              </Pressable>
+            </View>
+          </>
+        ) : (
+          <Txt style={styles.noSelection}>
+            {layers.length
+              ? 'Toque num texto da imagem para editar, ou crie um novo.'
+              : 'Sem texto. Toque em “Novo texto” se quiser escrever algo.'}
           </Txt>
-          <Pressable
-            onPress={() => update({ size: clamp(layer.size - 10, MIN_SIZE, MAX_SIZE) })}
-            style={styles.sizeBtn}
-          >
-            <Txt weight="bold" style={styles.sizeTxt}>
-              A−
-            </Txt>
-          </Pressable>
-          <Pressable
-            onPress={() => update({ size: clamp(layer.size + 10, MIN_SIZE, MAX_SIZE) })}
-            style={styles.sizeBtn}
-          >
-            <Txt weight="bold" style={[styles.sizeTxt, { fontSize: 22 }]}>
-              A+
-            </Txt>
-          </Pressable>
-        </View>
+        )}
 
         <Txt weight="medium" style={[styles.label, { marginTop: 8 }]}>
           Emoji pra achar no WhatsApp
@@ -207,7 +281,7 @@ export default function TextEditor({ image, crop, typefaces, saving, onBack, onC
         <Button
           title="Salvar figurinha"
           loading={saving}
-          onPress={() => onConfirm(hasText ? layer : null, emoji)}
+          onPress={() => onConfirm(filled, emoji)}
           style={{ flex: 1.6 }}
         />
       </View>
@@ -223,7 +297,12 @@ function Section({ title, children }: { title?: string; children: React.ReactNod
           {title}
         </Txt>
       )}
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+        contentContainerStyle={styles.chipRow}
+      >
         {children}
       </ScrollView>
     </View>
@@ -235,9 +314,11 @@ const styles = StyleSheet.create({
   header: { flexDirection: 'row', alignItems: 'baseline', gap: 8, paddingHorizontal: 18, paddingBottom: 8 },
   headerTitle: { color: '#fff', fontSize: 22 },
   headerHint: { color: 'rgba(255,255,255,0.45)', fontSize: 14 },
-  scroll: { paddingHorizontal: 18, gap: 12, paddingBottom: 12 },
   previewWrap: { alignSelf: 'center', borderRadius: 18, overflow: 'hidden' },
-  dragHint: { color: 'rgba(255,255,255,0.5)', textAlign: 'center', fontSize: 13, marginTop: -4 },
+  dragHint: { color: 'rgba(255,255,255,0.5)', textAlign: 'center', fontSize: 13, marginTop: 6 },
+  layerBar: { flexDirection: 'row', justifyContent: 'center', gap: 10, paddingVertical: 10 },
+  smallBtn: { paddingVertical: 8, paddingHorizontal: 16 },
+  scroll: { paddingHorizontal: 18, gap: 12, paddingBottom: 12 },
   input: {
     fontFamily: fonts.medium,
     fontSize: 18,
@@ -249,6 +330,7 @@ const styles = StyleSheet.create({
     minHeight: 50,
     maxHeight: 100,
   },
+  noSelection: { color: 'rgba(255,255,255,0.6)', textAlign: 'center', paddingVertical: 12, fontSize: 15 },
   label: { color: 'rgba(255,255,255,0.75)', fontSize: 14 },
   chipRow: { gap: 8, alignItems: 'center' },
   fontBtn: {

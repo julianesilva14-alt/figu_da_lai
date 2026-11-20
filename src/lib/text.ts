@@ -51,14 +51,29 @@ export function useStickerTypefaces(): Typefaces | null {
   return { anton, fredoka, bangers, marker, pacifico };
 }
 
-/** Desenha o texto (com contorno opcional) centralizado em (x, y). Aceita várias linhas. */
-export function drawTextLayer(canvas: SkCanvas, layer: TextLayer, typefaces: Typefaces) {
-  const lines = layer.text.split('\n');
-  if (!layer.text.trim()) return;
+function layout(layer: TextLayer, typefaces: Typefaces) {
   const font = Skia.Font(typefaces[layer.font], layer.size);
   const m = font.getMetrics();
   const lineH = m.descent - m.ascent;
-  let baseline = layer.y - (lineH * lines.length) / 2 - m.ascent;
+  const lines = layer.text.split('\n').map((t) => ({ t, w: font.measureText(t).width }));
+  const height = lineH * lines.length;
+  const width = Math.max(0, ...lines.map((l) => l.w));
+  return { font, m, lineH, lines, width, height };
+}
+
+/** Caixa ocupada pelo texto, em pixels da figurinha (para tocar/selecionar). */
+export function textBounds(layer: TextLayer, typefaces: Typefaces) {
+  const { width, height } = layout(layer, typefaces);
+  const w = Math.max(width, layer.size); // texto vazio ainda tem uma área para tocar
+  const h = Math.max(height, layer.size);
+  return { x: layer.x - w / 2, y: layer.y - h / 2, w, h };
+}
+
+/** Desenha o texto (com contorno opcional) centralizado em (x, y). Aceita várias linhas. */
+export function drawTextLayer(canvas: SkCanvas, layer: TextLayer, typefaces: Typefaces) {
+  if (!layer.text.trim()) return;
+  const { font, m, lineH, lines, height } = layout(layer, typefaces);
+  let baseline = layer.y - height / 2 - m.ascent;
 
   const fill = Skia.Paint();
   fill.setAntiAlias(true);
@@ -71,11 +86,10 @@ export function drawTextLayer(canvas: SkCanvas, layer: TextLayer, typefaces: Typ
   stroke.setStrokeWidth(Math.max(3, layer.size * 0.18));
   stroke.setColor(Skia.Color(layer.outline ?? 'transparent'));
 
-  for (const line of lines) {
-    const w = font.measureText(line).width;
+  for (const { t, w } of lines) {
     const x = layer.x - w / 2;
-    if (layer.outline) canvas.drawText(line, x, baseline, stroke, font);
-    canvas.drawText(line, x, baseline, fill, font);
+    if (layer.outline) canvas.drawText(t, x, baseline, stroke, font);
+    canvas.drawText(t, x, baseline, fill, font);
     baseline += lineH;
   }
 }

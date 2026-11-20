@@ -48,17 +48,17 @@ function drawFilled(image: SkImage, crop: Crop, size: number, extra?: (c: SkCanv
 
 /**
  * Gera a figurinha SEM margem e SEM contorno branco: o recorte é ampliado até
- * encostar na borda do quadro. O texto (se houver) é desenhado por cima. Quadrado → ocupa 100%. Retângulo → o lado maior
- * encosta na borda e o que sobra fica transparente.
+ * encostar na borda do quadro. Quadrado → ocupa 100%. Retângulo → o lado maior
+ * encosta na borda e o que sobra fica transparente. Os textos são desenhados por cima.
  * Retorna o WebP em base64, já abaixo do limite de 100 KB.
  */
 export function renderSticker(
   image: SkImage,
   crop: Crop,
-  text?: { layer: TextLayer; typefaces: Typefaces } | null,
+  text?: { layers: TextLayer[]; typefaces: Typefaces } | null,
 ): string {
   const snapshot = drawFilled(image, crop, STICKER_SIZE, (c) => {
-    if (text) drawTextLayer(c, text.layer, text.typefaces);
+    text?.layers.forEach((l) => drawTextLayer(c, l, text.typefaces));
   });
   let base64 = '';
   for (const quality of [95, 90, 85, 80, 70, 60, 50, 40, 30]) {

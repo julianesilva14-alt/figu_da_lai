@@ -28,13 +28,13 @@ export default function Editor() {
       });
   }, [uri]);
 
-  const save = (layer: TextLayer | null, emoji: string) => {
+  const save = (layers: TextLayer[], emoji: string) => {
     if (!image || !crop || !typefaces) return;
     setSaving(true);
     // Deixa o indicador aparecer antes do processamento (que é síncrono).
     setTimeout(() => {
       try {
-        addSticker(packId, renderSticker(image, crop, layer && { layer, typefaces }), emoji);
+        addSticker(packId, renderSticker(image, crop, { layers, typefaces }), emoji);
         router.back();
       } catch (e) {
         setSaving(false);
